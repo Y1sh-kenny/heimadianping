@@ -10,10 +10,12 @@ import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.RedisConstants;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
@@ -21,6 +23,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.CACHE_SHOP_KEY;
+import static com.hmdp.utils.RedisConstants.CACHE_SHOP_TTL;
 
 /**
  * <p>
@@ -34,7 +39,10 @@ import java.util.concurrent.TimeUnit;
 public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IShopService {
 
 	@Resource
-	StringRedisTemplate stringRedisTemplate;
+	private StringRedisTemplate stringRedisTemplate;
+
+	@Resource
+	private CacheClient cacheClient;
 
 	private static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
 	private boolean tryLock(String key)
@@ -48,32 +56,10 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 	}
 	@Override
 	public Result queryById(Long id) {
-		/*
-		String key = RedisConstants.CACHE_SHOP_KEY + id;
-		//从Redis里面查
-		String shopJson = stringRedisTemplate.opsForValue().get(key);
-		if(StrUtil.isNotBlank(shopJson)){
-			return Result.ok(JSONUtil.toBean(shopJson,Shop.class));
-		}
-		//shopJson == "" ,即查询到空值时.
-		if(shopJson != null){
-			return Result.fail("店铺不存在");
-		}
-		//从数据库里查
-		Shop shop = getById(id);
-		if(shop == null){
-			stringRedisTemplate.opsForValue().set(key,"",RedisConstants.CACHE_NULL_TTL,TimeUnit.MINUTES);
-			return Result.fail("店铺不存在");
-		}
+		Shop shop = cacheClient
+				.queryWithLogicExpire(CACHE_SHOP_KEY,id,Shop.class,this::getById,CACHE_SHOP_TTL,TimeUnit.MINUTES);
 
-		//写入缓存中
-		stringRedisTemplate.opsForValue().set(key,JSONUtil.toJsonStr(shop),RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
-		//返回
-		 */
-		//缓存穿透
-		//Shop shop = queryWithPassThrough(id);
-		//互斥锁解决缓存击穿
-		Shop shop = queryWithLogicExpire(id);
+
 		if(shop == null){
 			return Result.fail("没有查询到shop");
 		}
@@ -83,7 +69,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 	//解决缓存穿透问题...
 	public Shop queryWithPassThrough(Long id)
 	{
-		String key = RedisConstants.CACHE_SHOP_KEY + id;
+		String key = CACHE_SHOP_KEY + id;
 		//从Redis里面查
 		String shopJson = stringRedisTemplate.opsForValue().get(key);
 		if(StrUtil.isNotBlank(shopJson)){
@@ -107,7 +93,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 	}
 	//解决缓存击穿问题 -- 服务重建过程复杂,容易被击穿.
 	public Shop queryWithMutex(Long id){
-		String key = RedisConstants.CACHE_SHOP_KEY + id;
+		String key = CACHE_SHOP_KEY + id;
 		//从Redis里面查
 		String shopJson = stringRedisTemplate.opsForValue().get(key);
 		if(StrUtil.isNotBlank(shopJson)){
@@ -156,7 +142,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 	//逻辑过期查询
 	public Shop queryWithLogicExpire(Long id)
 	{
-		String key = RedisConstants.CACHE_SHOP_KEY + id;
+		String key = CACHE_SHOP_KEY + id;
 		//从Redis里面查
 		String shopJson = stringRedisTemplate.opsForValue().get(key);
 		if (StrUtil.isBlank(shopJson)) {
@@ -214,7 +200,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 		RedisData redisData = new RedisData();
 		redisData.setData(shop);
 		redisData.setExpireTime(LocalDateTime.now().plus(10, ChronoUnit.SECONDS));
-		stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,JSONUtil.toJsonStr(redisData));
+		stringRedisTemplate.opsForValue().set(CACHE_SHOP_KEY+id,JSONUtil.toJsonStr(redisData));
 	}
 
 	@Override
@@ -226,7 +212,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 		}
 		//先更新数据库,再删除缓存
 		updateById(shop);
-		stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY + id);
+		stringRedisTemplate.delete(CACHE_SHOP_KEY + id);
 
 		return Result.ok();
 	}
